@@ -138,6 +138,7 @@ def download_file(url, output_path):
 def download_with_ytdlp(url, height):
     outtmpl = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.%(ext)s")
     
+    # تنظیمات قوی‌تر برای دور زدن محدودیت‌های یوتیوب
     ydl_opts = {
         "format": make_format(height),
         "outtmpl": outtmpl,
@@ -147,18 +148,51 @@ def download_with_ytdlp(url, height):
         "no_warnings": True,
         "restrictfilenames": True,
         "socket_timeout": 30,
-        "retries": 2,
+        "retries": 3,
         "max_filesize": MAX_DOWNLOAD_MB * 1024 * 1024,
+        # استفاده از چندین client مختلف
         "extractor_args": {
             "youtube": {
-                "player_client": ["android", "web_embedded", "tv", "default"]
+                "player_client": [
+                    "ios",
+                    "android", 
+                    "web_creator",
+                    "web_embedded",
+                    "tv",
+                    "default"
+                ]
             }
+        },
+        # اضافه کردن user-agent برای شبیه‌سازی مرورگر واقعی
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         }
     }
     
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=True)
-        return get_final_filepath(ydl, info)
+    # تلاش با تنظیمات مختلف
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            return get_final_filepath(ydl, info)
+    except Exception as e:
+        # اگر اولین تلاش شکست خورد، با تنظیمات ساده‌تر امتحان کن
+        ydl_opts_simple = {
+            "format": make_format(height),
+            "outtmpl": outtmpl,
+            "merge_output_format": "mp4",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "restrictfilenames": True,
+            "socket_timeout": 30,
+            "retries": 3,
+            "max_filesize": MAX_DOWNLOAD_MB * 1024 * 1024,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts_simple) as ydl2:
+            info = ydl2.extract_info(url, download=True)
+            return get_final_filepath(ydl2, info)
 
 
 def get_video_duration(url):
@@ -284,8 +318,18 @@ def download_mp3(url):
             "max_filesize": MAX_DOWNLOAD_MB * 1024 * 1024,
             "extractor_args": {
                 "youtube": {
-                    "player_client": ["android", "web_embedded", "tv", "default"]
+                    "player_client": [
+                        "ios",
+                        "android", 
+                        "web_creator",
+                        "web_embedded",
+                        "tv",
+                        "default"
+                    ]
                 }
+            },
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
             }
         }
     else:
@@ -378,7 +422,6 @@ async def send_to_channel(file_path, user, is_audio=False):
                 parse_mode="HTML"
             )
     except Exception as e:
-        # اگه ارسال به کانال شکست خورد، خطا نده
         pass
 
 
@@ -509,10 +552,6 @@ async def cmd_help(message: types.Message):
         await message.answer("🔐 ابتدا با <code>/key</code> وارد شوید.", parse_mode="HTML")
         return
     
-    await cb_help_logic(message)
-
-
-async def cb_help_logic(message):
     await message.answer(
         "📖 <b>راهنمای استفاده</b>\n"
         "━━━━━━━━━━━━━━\n\n"
