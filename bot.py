@@ -4,22 +4,18 @@ import re
 import subprocess
 import threading
 import uuid
-import httpx
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from aiogram.types import FSInputFile
+import yt_dlp
 
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-COBALT_API = os.getenv("COBALT_API")
 
 if not BOT_TOKEN:
     raise SystemExit("BOT_TOKEN is not set.")
-
-if not COBALT_API:
-    raise SystemExit("COBALT_API is not set.")
 
 
 TMP_DIR = os.getenv("TMP_DIR", "/tmp/tg_video_bot")
@@ -30,6 +26,7 @@ MAX_MB = 49
 MAX_DURATION = 60
 MAX_HEIGHT = 720
 DEFAULT_HEIGHT = 480
+MAX_DOWNLOAD_MB = 300
 
 
 dp = Dispatcher()
@@ -71,43 +68,20 @@ def parse_time(value):
     raise ValueError("زمان نامعتبر")
 
 
-def download_from_cobalt(url, height):
-    """از Cobalt API لینک مستقیم دانلود را می‌گیرد"""
-    response = httpx.post(
-        f"{COBALT_API}/",
-        json={
-            "url": url,
-            "videoQuality": str(height),
-            "downloadMode": "auto",
-            "filenameStyle": "basic",
-        },
-        headers={
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-        },
-        timeout=30.0
+def make_format(height):
+    return (
+        f"bestvideo[height<={height}]+bestaudio/"
+        f"best[height<={height}]/"
+        f"bestvideo*+bestaudio/best"
     )
-    
-    data = response.json()
-    
-    if data.get("status") == "error":
-        error_info = data.get("error", {})
-        error_code = error_info.get("code", "نامشخص") if isinstance(error_info, dict) else str(error_info)
-        raise ValueError(f"خطا از Cobalt: {error_code}")
-    
-    if data.get("status") in ["redirect", "tunnel"]:
-        return data["url"]
-    else:
-        raise ValueError(f"وضعیت غیرمنتظره: {data.get('status')}")
 
 
-def download_file(url, output_path):
-    """فایل را از URL دانلود می‌کند"""
-    with httpx.stream("GET", url, follow_redirects=True, timeout=300.0) as r:
-        r.raise_for_status()
-        with open(output_path, "wb") as f:
-            for chunk in r.iter_bytes(chunk_size=8192):
-                f.write(chunk)
+def get_final_filepath(ydl, info):
+    if info.get("requested_downloads"):
+        path = info["requested_downloads"][0].get("filepath")
+        if path:
+            return path
+    return ydl.prepare_filename(info)
 
 
 def download_and_cut(url, start, end, height):
@@ -120,14 +94,35 @@ def download_and_cut(url, start, end, height):
     height = int(height)
     height = max(144, min(height, MAX_HEIGHT))
     
-    # گرفتن لینک مستقیم از Cobalt
-    direct_url = download_from_cobalt(url, height)
+    outtmpl = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.%(ext)s")
     
-    # دانلود فایل
-    input_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.mp4")
-    download_file(direct_url, input_path)
+    # تنظیمات yt-dlp با client های مختلف برای دور زدن محدودیت‌ها
+    ydl_opts = {
+        "format": make_format(height),
+        "outtmpl": outtmpl,
+        "merge_output_format": "mp4",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+        "socket_timeout": 30,
+        "retries": 2,
+        "max_filesize": MAX_DOWNLOAD_MB * 1024 * 1024,
+        # این بخش مهم است: استفاده از client های مختلف یوتیوب
+        "extractor_args": {
+            "youtube": {
+                "player_client": ["android", "web_embedded", "tv", "default"]
+            }
+        }
+    }
     
-    # برش با FFmpeg
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        input_path = get_final_filepath(ydl, info)
+    
+    if not input_path or not os.path.exists(input_path):
+        raise RuntimeError("فایل دانلود شده پیدا نشد.")
+    
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.mp4")
     
     cmd = [
