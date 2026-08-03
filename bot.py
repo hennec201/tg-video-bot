@@ -195,32 +195,22 @@ def download_with_ytdlp(url, height):
             return get_final_filepath(ydl2, info)
 
 
-def get_video_duration(url):
-    """مدت زمان ویدیو رو بدون دانلود گرفتن"""
-    try:
-        if is_youtube_url(url):
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True,
-                                    "extractor_args": {"youtube": {"player_client": ["android"]}}}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return info.get("duration", 0)
-        else:
-            with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return info.get("duration", 0)
-    except Exception:
-        return 0
-
-
-def download_and_cut(url, start, end, height):
-    if end <= start:
-        raise ValueError("⏱ زمان پایان باید بعد از زمان شروع باشد.")
-    
-    duration = end - start
-    if duration > MAX_DURATION:
-        raise ValueError(f"⏱ حداکثر برش: {MAX_DURATION // 60} دقیقه")
-    
+def download_and_cut(url, start=None, end=None, height=DEFAULT_HEIGHT):
     height = int(height)
     height = max(240, min(height, MAX_HEIGHT))
+    
+    # اگه زمان شروع و پایان داده نشده، کل ویدیو دانلود میشه
+    cut_video = start is not None and end is not None
+    
+    if cut_video:
+        if end <= start:
+            raise ValueError("⏱ زمان پایان باید بعد از زمان شروع باشد.")
+        
+        duration = end - start
+        if duration > MAX_DURATION:
+            raise ValueError(f"⏱ حداکثر برش: {MAX_DURATION // 60} دقیقه")
+    else:
+        duration = None  # کل ویدیو
     
     input_path = None
     
@@ -244,37 +234,54 @@ def download_and_cut(url, start, end, height):
     if not input_path or not os.path.exists(input_path):
         raise RuntimeError("❌ فایل دانلود شده پیدا نشد.")
     
-    # برش با FFmpeg
     output_path = os.path.join(TMP_DIR, f"{uuid.uuid4().hex}.mp4")
     
-    # تنظیمات فشرده‌سازی بر اساس مدت ویدیو
-    if duration > 180:  # بیشتر از 3 دقیقه
-        crf = "32"
-        audio_bitrate = "64k"
-    elif duration > 60:  # بیشتر از 1 دقیقه
-        crf = "30"
-        audio_bitrate = "80k"
+    # اگه برش نداریم، فقط فایل رو تبدیل می‌کنیم
+    if not cut_video:
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "28",
+            "-vf", f"scale=-2:{height}",
+            "-c:a", "aac",
+            "-b:a", "96k",
+            "-movflags", "+faststart",
+            output_path,
+        ]
     else:
-        crf = "28"
-        audio_bitrate = "96k"
-    
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-hide_banner",
-        "-loglevel", "error",
-        "-ss", str(start),
-        "-to", str(end),
-        "-i", input_path,
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-crf", crf,
-        "-vf", f"scale=-2:{height}",
-        "-c:a", "aac",
-        "-b:a", audio_bitrate,
-        "-movflags", "+faststart",
-        output_path,
-    ]
+        # تنظیمات فشرده‌سازی بر اساس مدت ویدیو
+        if duration > 180:
+            crf = "32"
+            audio_bitrate = "64k"
+        elif duration > 60:
+            crf = "30"
+            audio_bitrate = "80k"
+        else:
+            crf = "28"
+            audio_bitrate = "96k"
+        
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-ss", str(start),
+            "-to", str(end),
+            "-i", input_path,
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", crf,
+            "-vf", f"scale=-2:{height}",
+            "-c:a", "aac",
+            "-b:a", audio_bitrate,
+            "-movflags", "+faststart",
+            output_path,
+        ]
     
     try:
         subprocess.run(cmd, check=True)
@@ -487,11 +494,18 @@ async def cb_dl_video(callback: types.CallbackQuery):
     await callback.message.answer(
         "🎬 <b>دانلود ویدیو</b>\n"
         "━━━━━━━━━━━━━━\n"
-        "دستور را به این شکل بفرستید:\n\n"
+        "📋 <b>روش‌های مختلف:</b>\n\n"
+        "🎥 <b>کل ویدیو:</b>\n"
+        "<code>/dl لینک</code>\n\n"
+        "🎥 <b>کل ویدیو با کیفیت:</b>\n"
+        "<code>/dl لینک کیفیت</code>\n\n"
+        "✂️ <b>برش ویدیو:</b>\n"
         "<code>/dl لینک شروع پایان کیفیت</code>\n\n"
-        "📝 <b>مثال:</b>\n"
+        "📌 <b>مثال‌ها:</b>\n"
+        "<code>/dl https://youtu.be/xxxx</code>\n"
+        "<code>/dl https://youtu.be/xxxx 720</code>\n"
         "<code>/dl https://youtu.be/xxxx 00:00:10 00:01:30 720</code>\n\n"
-        "⏱ <b>حداکثر مدت:</b> ۵ دقیقه\n"
+        "⏱ <b>حداکثر مدت برش:</b> ۵ دقیقه\n"
         "📐 <b>کیفیت:</b> 240 تا 1080\n"
         "━━━━━━━━━━━━━━",
         parse_mode="HTML"
@@ -520,10 +534,14 @@ async def cb_help(callback: types.CallbackQuery):
         "📖 <b>راهنمای استفاده</b>\n"
         "━━━━━━━━━━━━━━\n\n"
         "🎬 <b>دانلود ویدیو:</b>\n"
-        "<code>/dl لینک شروع پایان کیفیت</code>\n\n"
+        "🎥 کل ویدیو: <code>/dl لینک</code>\n"
+        "🎥 با کیفیت: <code>/dl لینک کیفیت</code>\n"
+        "✂️ برش: <code>/dl لینک شروع پایان کیفیت</code>\n\n"
         "🎵 <b>دانلود MP3:</b>\n"
         "<code>/mp3 لینک</code>\n\n"
         "📋 <b>نمونه‌ها:</b>\n"
+        "<code>/dl https://youtu.be/xxxx</code>\n"
+        "<code>/dl https://youtu.be/xxxx 720</code>\n"
         "<code>/dl https://youtu.be/xxxx 00:00:10 00:01:30 720</code>\n"
         "<code>/dl https://youtu.be/xxxx 30 90 480</code>\n"
         "<code>/mp3 https://youtu.be/xxxx</code>\n\n"
@@ -531,7 +549,7 @@ async def cb_help(callback: types.CallbackQuery):
         "⏱ <b>فرمت زمان:</b>\n"
         "• ثانیه: <code>90</code>\n"
         "• دقیقه:ثانیه: <code>01:30</code>\n"
-        "• ساعت:دقیقه:ثانیه: <code>00:01:30</code>\n\n"
+        "• ساعت:دقیقه:ثانیه: <code>01:30:45</code>\n\n"
         "📐 <b>کیفیت‌ها:</b> 240, 360, 480, 720, 1080\n\n"
         "🌐 <b>سایت‌های پشتیبانی شده:</b>\n"
         "یوتیوب، اینستاگرام، تیک‌تاک، Reddit، Vimeo و ...\n\n"
@@ -556,10 +574,14 @@ async def cmd_help(message: types.Message):
         "📖 <b>راهنمای استفاده</b>\n"
         "━━━━━━━━━━━━━━\n\n"
         "🎬 <b>دانلود ویدیو:</b>\n"
-        "<code>/dl لینک شروع پایان کیفیت</code>\n\n"
+        "🎥 کل ویدیو: <code>/dl لینک</code>\n"
+        "🎥 با کیفیت: <code>/dl لینک کیفیت</code>\n"
+        "✂️ برش: <code>/dl لینک شروع پایان کیفیت</code>\n\n"
         "🎵 <b>دانلود MP3:</b>\n"
         "<code>/mp3 لینک</code>\n\n"
         "📋 <b>نمونه‌ها:</b>\n"
+        "<code>/dl https://youtu.be/xxxx</code>\n"
+        "<code>/dl https://youtu.be/xxxx 720</code>\n"
         "<code>/dl https://youtu.be/xxxx 00:00:10 00:01:30 720</code>\n"
         "<code>/dl https://youtu.be/xxxx 30 90 480</code>\n"
         "<code>/mp3 https://youtu.be/xxxx</code>\n\n"
@@ -567,7 +589,7 @@ async def cmd_help(message: types.Message):
         "⏱ <b>فرمت زمان:</b>\n"
         "• ثانیه: <code>90</code>\n"
         "• دقیقه:ثانیه: <code>01:30</code>\n"
-        "• ساعت:دقیقه:ثانیه: <code>00:01:30</code>\n\n"
+        "• ساعت:دقیقه:ثانیه: <code>01:30:45</code>\n\n"
         "📐 <b>کیفیت‌ها:</b> 240, 360, 480, 720, 1080\n\n"
         "🌐 <b>سایت‌های پشتیبانی شده:</b>\n"
         "یوتیوب، اینستاگرام، تیک‌تاک، Reddit، Vimeo و ...\n\n"
@@ -590,30 +612,60 @@ async def cmd_dl(message: types.Message):
     
     parts = message.text.split()
     
-    if len(parts) < 4:
+    if len(parts) < 2:
         await message.answer(
             "❌ <b>دستور ناقص است!</b>\n\n"
-            "📝 الگو:\n"
-            "<code>/dl لینک شروع پایان کیفیت</code>\n\n"
-            "📌 مثال:\n"
+            "📝 الگوها:\n"
+            "🎬 <b>کل ویدیو:</b> <code>/dl لینک</code>\n"
+            "🎬 <b>کل ویدیو با کیفیت:</b> <code>/dl لینک کیفیت</code>\n"
+            "✂️ <b>برش ویدیو:</b> <code>/dl لینک شروع پایان کیفیت</code>\n\n"
+            "📌 مثال‌ها:\n"
+            "<code>/dl https://youtu.be/xxxx</code>\n"
+            "<code>/dl https://youtu.be/xxxx 720</code>\n"
             "<code>/dl https://youtu.be/xxxx 00:00:10 00:01:30 720</code>",
             parse_mode="HTML"
         )
         return
     
     url = parts[1]
+    start = None
+    end = None
+    height = DEFAULT_HEIGHT
     
     try:
-        start = parse_time(parts[2])
-        end = parse_time(parts[3])
-        height = int(parts[4]) if len(parts) > 4 and parts[4].isdigit() else DEFAULT_HEIGHT
+        if len(parts) == 2:
+            # فقط لینک: /dl لینک
+            start = None
+            end = None
+            height = DEFAULT_HEIGHT
+        
+        elif len(parts) == 3:
+            # لینک + کیفیت: /dl لینک کیفیت
+            if parts[2].isdigit():
+                height = int(parts[2])
+            else:
+                await message.answer("❌ کیفیت باید عدد باشد. مثال: 480 یا 720")
+                return
+        
+        elif len(parts) == 4:
+            # لینک + شروع + پایان: /dl لینک شروع پایان
+            start = parse_time(parts[2])
+            end = parse_time(parts[3])
+            height = DEFAULT_HEIGHT
+        
+        elif len(parts) >= 5:
+            # لینک + شروع + پایان + کیفیت: /dl لینک شروع پایان کیفیت
+            start = parse_time(parts[2])
+            end = parse_time(parts[3])
+            height = int(parts[4]) if parts[4].isdigit() else DEFAULT_HEIGHT
+    
     except ValueError as e:
         await message.answer(f"❌ {e}")
         return
     
     status = await message.answer(
         "⏳ <b>در حال پردازش...</b>\n"
-        "📥 دانلود و برش ویدیو\n"
+        "📥 دانلود ویدیو\n"
         "⏱ لطفاً صبر کنید...",
         parse_mode="HTML"
     )
@@ -626,13 +678,11 @@ async def cmd_dl(message: types.Message):
         
         await status.edit_text("✅ آماده شد! در حال ارسال...")
         
-        # ارسال به کاربر
         await message.answer_video(
             FSInputFile(file_path),
-            caption=f"🎬 برش ویدیو\n📐 کیفیت: {height}p"
+            caption=f"🎬 ویدیو\n📐 کیفیت: {height}p"
         )
         
-        # ارسال به کانال
         await send_to_channel(file_path, message.from_user, is_audio=False)
         
         await status.edit_text("✅ ویدیو ارسال شد!")
@@ -685,13 +735,11 @@ async def cmd_mp3(message: types.Message):
         
         await status.edit_text("✅ آماده شد! در حال ارسال...")
         
-        # ارسال به کاربر
         await message.answer_audio(
             FSInputFile(file_path),
             caption="🎵 دانلود MP3"
         )
         
-        # ارسال به کانال
         await send_to_channel(file_path, message.from_user, is_audio=True)
         
         await status.edit_text("✅ فایل صوتی ارسال شد!")
